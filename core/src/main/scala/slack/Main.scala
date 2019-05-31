@@ -26,12 +26,12 @@ import io.circe.Json
 import io.circe.generic.extras.Configuration
 import java.{util => ju}
 
-case class Config(token: String)
+case class Config(token: String, rtmMessageBufferSize: Int)
 
 object Main extends IOApp {
   val token = "TODO"
 
-  val config = Config(token)
+  val config = Config(token, rtmMessageBufferSize = 100)
 
   val cachedUnbounded =
     Resource.make(IO(Executors.newCachedThreadPool()))(e => IO(e.shutdown())).map(ExecutionContext.fromExecutorService)
@@ -102,9 +102,9 @@ object RTM {
       (deriveDecoder[Event] either Decoder[Json].map(Unknown(_))).map(_.swap)
   }
 
-  sealed trait ConnectResponse extends Product with Serializable
+  private[RTM] sealed trait ConnectResponse extends Product with Serializable
 
-  object ConnectResponse {
+  private[RTM] object ConnectResponse {
     case class Ok(url: Uri)         extends ConnectResponse
     case class NotOk(error: String) extends ConnectResponse
 
@@ -149,7 +149,7 @@ object RTM {
 
             implicit val strCodec = scodec.codecs.utf8
 
-            Stream.eval(Queue.bounded[F, String](100)).flatMap { q =>
+            Stream.eval(Queue.bounded[F, String](config.rtmMessageBufferSize)).flatMap { q =>
               val ws = WebSocket.client[F, String, String](req, _.collect {
                 case Text(a) => a
               }.through(q.enqueue).drain, sslContext = sslCtx)
