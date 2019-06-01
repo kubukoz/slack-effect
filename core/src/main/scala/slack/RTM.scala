@@ -22,6 +22,10 @@ import slack.internal.Constants
 import slack.internal.JsonUtils
 
 trait RTM[F[_]] {
+  /**
+   * Calls the /api/rtm.connect endpoint and opens a websocket connection to the acquired URL.
+   * Streams decoded events (or the raw Json values wrapped in [[RTM.Event.Unknown]]).
+   * */
   def connect: Stream[F, Either[RTM.Event.Unknown, RTM.Event]]
 }
 
