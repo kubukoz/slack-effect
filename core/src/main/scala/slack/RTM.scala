@@ -18,6 +18,8 @@ import spinoco.protocol.http.HttpMethod
 import slack.net.WS
 import spinoco.fs2.http.HttpRequest
 import spinoco.fs2.http.websocket.Frame
+import slack.internal.Constants
+import slack.internal.JsonUtils
 
 trait RTM[F[_]] {
   def connect: Stream[F, Either[RTM.Event.Unknown, RTM.Event]]
@@ -79,6 +81,16 @@ object RTM {
     config: AppConfig
   )(implicit client: HttpClient[F]): RTM[F] = new RTM[F] {
 
+    val decodeEventOrUnknown: String => F[Either[Event.Unknown, Event]] = {
+      io.circe.parser
+        .parse(_)
+        .leftMap(failure => new Throwable("Parsing failure: " + failure.message, failure.underlying))
+        .liftTo[F]
+        .map { json =>
+          json.as[Event] orElse Left(Event.Unknown(json))
+        }
+    }
+
     val connectRequest =
       HttpRequest.get[F](Uri.https(Constants.ApiHost, "/api/rtm.connect")).withQuery(Uri.Query("token", config.token))
 
@@ -87,12 +99,7 @@ object RTM {
         .request(connectRequest)
         .evalMap { response =>
           if (response.header.status.isSuccess)
-            //bodyAsString doesn't work with media type application/json
-            response.body
-              .through(fs2.text.utf8Decode[F])
-              .compile
-              .foldMonoid
-              .flatMap(io.circe.parser.decode[ConnectResponse](_).liftTo[F])
+            JsonUtils.decodeAsJson[F, ConnectResponse](response.body)
           else
             response.bodyAsString
               .flatMap(_.toEither.leftMap(e => new Throwable(e.messageWithContext)).liftTo[F])
@@ -116,16 +123,7 @@ object RTM {
                 }.through(q.enqueue).drain
               }
 
-              q.dequeue.evalMap(
-                io.circe.parser
-                  .parse(_)
-                  .leftMap(failure => new Throwable("Parsing failure: " + failure.message, failure.underlying))
-                  .liftTo[F]
-                  .map { json =>
-                    json.as[Event] orElse Left(Event.Unknown(json))
-                  }
-              ) concurrently
-                Stream.eval(ws)
+              q.dequeue.evalMap(decodeEventOrUnknown) concurrently Stream.eval(ws)
             }
 
           case ConnectResponse.NotOk(error) =>
