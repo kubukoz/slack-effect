@@ -32,13 +32,13 @@ import spinoco.fs2.http.websocket.Frame
 import scodec.Encoder
 import cats.Show
 import cats.effect.Concurrent
+import cats.Applicative
 
-case class Config(token: String, rtmMessageBufferSize: Int)
+final case class AppConfig(token: String, rtmMessageBufferSize: Int)
 
 object Main extends IOApp {
-  val token = "TODO"
 
-  val config = Config(token, rtmMessageBufferSize = 100)
+  val config: AppConfig = ConfigImpl.value
 
   val cachedUnbounded =
     Resource.make(IO(Executors.newCachedThreadPool()))(e => IO(e.shutdown())).map(ExecutionContext.fromExecutorService)
@@ -124,7 +124,7 @@ object RTM {
   }
 
   def http[F[_]: Concurrent: WS](
-    config: Config
+    config: AppConfig
   )(implicit client: HttpClient[F]): RTM[F] = new RTM[F] {
 
     val connectRequest =
@@ -182,14 +182,18 @@ object WS {
   def apply[F[_]](implicit F: WS[F]): WS[F] = F
 
   def default[F[_]: ConcurrentEffect: Timer: ContextShift](
-    implicit ag: AsynchronousChannelGroup,
-    sslCtx: SSLContext
+    implicit ag: AsynchronousChannelGroup
   ): WS[F] = new WS[F] {
 
     def request[I: scodec.Decoder, O: Encoder](
       req: WebSocketRequest
     )(pipe: fs2.Pipe[F, Frame[I], Frame[O]]): F[Unit] = {
-      WebSocket.client[F, I, O](req, pipe).compile.drain
+      WebSocket.client[F, I, O](req, pipe).compile.lastOrError.flatMap {
+        case None => Applicative[F].unit
+        case Some(errorResponse) =>
+          new Throwable(s"Failed to establish websocket connection to $req. Server response: $errorResponse")
+            .raiseError[F, Unit]
+      }
     }
   }
 }
