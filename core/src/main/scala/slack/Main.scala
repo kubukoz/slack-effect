@@ -25,6 +25,13 @@ import spinoco.fs2.http.websocket.Frame.Text
 import io.circe.Json
 import io.circe.generic.extras.Configuration
 import java.{util => ju}
+import _root_.spinoco.protocol.http.HttpRequestHeader
+import spinoco.protocol.http.HttpMethod
+import fs2.Pipe
+import spinoco.fs2.http.websocket.Frame
+import scodec.Encoder
+import cats.Show
+import cats.effect.Concurrent
 
 case class Config(token: String, rtmMessageBufferSize: Int)
 
@@ -41,20 +48,15 @@ object Main extends IOApp {
       implicit val acg    = AsynchronousChannelGroup.withThreadPool(ec)
       implicit val sslCtx = SSLContext.getDefault()
 
+      implicit val ws: WS[IO] = WS.default
+
       HttpClient[IO](
         HttpRequestHeaderCodec.defaultCodec,
         HttpResponseHeaderCodec.defaultCodec,
         ec,
         sslCtx
       ).flatMap { implicit client =>
-        RTM
-          .http[IO](config)
-          .connect
-          .evalMap { event =>
-            IO(println(event))
-          }
-          .compile
-          .drain
+        RTM.http[IO](config).connect.showLinesStdOut.compile.drain
       }
     }.as(ExitCode.Success)
 }
@@ -93,6 +95,9 @@ object RTM {
       }
     }
 
+    implicit val showUnknown: Show[Unknown] = Show.fromToString
+    implicit val showEvent: Show[Event]     = Show.fromToString
+
     import io.circe.generic.extras.semiauto.deriveDecoder
 
     implicit val config: Configuration =
@@ -118,9 +123,9 @@ object RTM {
     } yield response
   }
 
-  def http[F[_]: ConcurrentEffect: ContextShift: Timer](
+  def http[F[_]: Concurrent: WS](
     config: Config
-  )(implicit client: HttpClient[F], ag: AsynchronousChannelGroup, sslCtx: SSLContext): RTM[F] = new RTM[F] {
+  )(implicit client: HttpClient[F]): RTM[F] = new RTM[F] {
 
     val connectRequest =
       HttpRequest.get[F](Uri.https("slack.com", "/api/rtm.connect")).withQuery(Uri.Query("token", config.token))
@@ -142,24 +147,49 @@ object RTM {
         }
         .flatMap {
           case ConnectResponse.Ok(url) =>
-            val req = url.host.port match {
-              case None       => WebSocketRequest.wss(url.host.host, url.path.stringify, url.query.params: _*)
-              case Some(port) => WebSocketRequest.wss(url.host.host, port, url.path.stringify, url.query.params: _*)
-            }
+            val req =
+              WebSocketRequest(
+                url.host,
+                HttpRequestHeader(method = HttpMethod.GET, path = url.path, query = url.query),
+                secure = true
+              )
 
             implicit val strCodec = scodec.codecs.utf8
 
             Stream.eval(Queue.bounded[F, String](config.rtmMessageBufferSize)).flatMap { q =>
-              val ws = WebSocket.client[F, String, String](req, _.collect {
-                case Text(a) => a
-              }.through(q.enqueue).drain, sslContext = sslCtx)
+              val ws = WS[F].request[String, String](req) {
+                _.collect {
+                  case Text(a) => a
+                }.through(q.enqueue).drain
+              }
 
               q.dequeue
-                .evalMap(io.circe.parser.decode(_)(Event.decoder).leftMap(e => new Throwable(e)).liftTo[F]) concurrently ws
+                .evalMap(io.circe.parser.decode(_)(Event.decoder).leftMap(e => new Throwable(e)).liftTo[F]) concurrently
+                Stream.eval(ws)
             }
 
           case ConnectResponse.NotOk(error) =>
             Stream.raiseError[F](new Throwable(show"Failed to connect to RTM: $error"))
         }
+  }
+}
+
+trait WS[F[_]] {
+  def request[I: scodec.Decoder, O: Encoder](req: WebSocketRequest)(pipe: Pipe[F, Frame[I], Frame[O]]): F[Unit]
+}
+
+object WS {
+  def apply[F[_]](implicit F: WS[F]): WS[F] = F
+
+  def default[F[_]: ConcurrentEffect: Timer: ContextShift](
+    implicit ag: AsynchronousChannelGroup,
+    sslCtx: SSLContext
+  ): WS[F] = new WS[F] {
+
+    def request[I: scodec.Decoder, O: Encoder](
+      req: WebSocketRequest
+    )(pipe: fs2.Pipe[F, Frame[I], Frame[O]]): F[Unit] = {
+      WebSocket.client[F, I, O](req, pipe).compile.drain
+    }
   }
 }
