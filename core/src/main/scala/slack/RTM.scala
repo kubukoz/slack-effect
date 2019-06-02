@@ -8,12 +8,14 @@ import io.circe.generic.extras.Configuration
 import io.circe.Json
 import cats.Show
 import java.util.UUID
+
 import spinoco.protocol.http.Uri
 import cats.effect.Concurrent
 import spinoco.fs2.http.HttpClient
 import spinoco.fs2.http.websocket.WebSocketRequest
 import spinoco.protocol.http.HttpRequestHeader
 import fs2.concurrent.Queue
+import scodec.Codec
 import spinoco.protocol.http.HttpMethod
 import slack.net.WS
 import spinoco.fs2.http.HttpRequest
@@ -95,7 +97,7 @@ object RTM {
         }
     }
 
-    val connectRequest =
+    private val connectRequest: HttpRequest[F] =
       HttpRequest.get[F](Uri.https(Constants.ApiHost, "/api/rtm.connect")).withQuery(Uri.Query("token", config.token))
 
     val connect: Stream[F, Either[Event.Unknown, Event]] =
@@ -118,7 +120,7 @@ object RTM {
                 secure = true
               )
 
-            implicit val strCodec = scodec.codecs.utf8
+            implicit val strCodec: Codec[String] = scodec.codecs.utf8
 
             Stream.eval(Queue.bounded[F, String](config.rtmMessageBufferSize)).flatMap { q =>
               val ws = WS[F].request[String, String](req) {
