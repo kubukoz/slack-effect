@@ -33,6 +33,7 @@ val commonSettings = Seq(
     "io.circe"          %% "circe-generic-extras" % "0.11.1",
     "io.circe"          %% "circe-generic"        % "0.11.1",
     "io.circe"          %% "circe-parser"         % "0.11.1",
+    "io.circe"          %% "circe-scodec"         % "0.11.1",
     "io.chrisdavenport" %% "cats-par"             % "0.2.1",
     "io.chrisdavenport" %% "log4cats-slf4j"       % "0.3.0", //test
     "org.scalatest"     %% "scalatest"            % "3.0.7" % Test
